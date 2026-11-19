@@ -3,19 +3,59 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Signal Sweep — Token Launch Radar</title>
+<title>Token Launch Radar</title>
 <link rel="stylesheet" href="app.css">
 </head>
 <body>
 <header class="top">
-  <a class="brand" href="index.html">SIGNAL<span>SWEEP</span></a>
-  <p class="tag">Token launch radar: protocols that record no token yet, priced by the market's own peer multiples.</p>
-  <div id="stats" class="stats"></div>
+  <div>
+    <h1>Token Launch Radar</h1>
+    <p class="sub">Pre-token protocols, ranked by implied token value. Value comes only from the sealed snapshot: TVL, 7-day growth, days listed with no token, chain breadth.</p>
+  </div>
+  <div class="meta" id="meta"></div>
 </header>
-<main id="app" aria-busy="true"></main>
-<footer class="foot">
-  <p id="model-line"></p>
-  <p>Implied value is this board's own model claim about what a token would be worth if the protocol's record stayed as it is. It is not a prediction that a token will be issued, and it is not financial advice.</p>
+
+<section class="controls">
+  <input id="q" type="search" placeholder="Search name or slug…" aria-label="Search">
+  <select id="chain" aria-label="Chain"><option value="">All chains</option></select>
+  <select id="category" aria-label="Category"><option value="">All categories</option></select>
+  <label class="check"><input id="watchlist" type="checkbox"> Watchlist only</label>
+  <button id="csv" type="button">Export CSV</button>
+  <span class="count" id="count"></span>
+</section>
+
+<main>
+  <table id="board">
+    <thead>
+      <tr>
+        <th data-sort="rank">Rank</th>
+        <th data-sort="name">Protocol</th>
+        <th data-sort="tvl_usd">TVL</th>
+        <th data-sort="change_7d">7d</th>
+        <th data-sort="age_days">Age</th>
+        <th data-sort="implied_value_usd">Implied value</th>
+        <th data-sort="multiple">Multiple</th>
+        <th>Chains</th>
+      </tr>
+    </thead>
+    <tbody id="rows"></tbody>
+  </table>
+
+  <section id="detail" class="detail" hidden>
+    <button id="close" type="button">← Back to board</button>
+    <h2 id="d-name"></h2>
+    <p id="d-facts" class="facts"></p>
+    <h3>Why this value</h3>
+    <div id="d-why"></div>
+    <h3>How to farm it</h3>
+    <ol id="d-steps"></ol>
+  </section>
+
+  <p class="note" id="trading-note"></p>
+</main>
+
+<footer>
+  <p>Implied value is this radar's own claim: implied = TVL × multiple (0.20 base + growth + age + breadth, clamped 0.08–0.65). A protocol that records no token may still have one its record does not carry. Nothing here is investment advice.</p>
 </footer>
 <script src="../data.js"></script>
 <script src="app.js"></script>

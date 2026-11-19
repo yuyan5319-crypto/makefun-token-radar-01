@@ -1,251 +1,169 @@
-// Signal Sweep dashboard: renders window.RADAR (written beside this page by
-// main.ts) as a sortable, filterable board of pre-token protocols, a detail
-// view per protocol with its model breakdown and farm plan, and a Live view
-// of protocols whose token already trades. No network, no framework.
-'use strict';
+// Token Launch Radar — board rendering, sorting, filtering, detail view.
+// Data comes from ../data.js (window.RADAR), written by main.ts. No network.
+(function () {
+  "use strict";
+  var DATA = window.RADAR || { rows: [] };
+  var rows = DATA.rows || [];
+  var state = { sort: "rank", dir: 1, q: "", chain: "", category: "", watchlist: false };
 
-const R = window.RADAR;
-const app = document.getElementById('app');
-const params = new URLSearchParams(location.search);
-const state = {
-  tab: params.get('view') === 'live' ? 'live' : 'board',
-  q: params.get('q') || '',
-  category: params.get('category') || '',
-  chain: params.get('chain') || '',
-  watchlist: params.get('watchlist') === '1',
-  risk: params.get('risk') || '',
-  minTvl: Number(params.get('mintvl') || 0),
-  sort: params.get('sort') || 'rank',
-  protocol: params.get('protocol') || '',
-};
-
-const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-function money(n) {
-  if (n === null || n === undefined) return '—';
-  if (n >= 1e9) return `$${(n / 1e9).toFixed(2)}B`;
-  if (n >= 1e6) return `$${(n / 1e6).toFixed(1)}M`;
-  if (n >= 1e3) return `$${(n / 1e3).toFixed(0)}K`;
-  return `$${n}`;
-}
-function pct(n) {
-  if (n === null || n === undefined) return '<span class="flat">—</span>';
-  const cls = n > 0.05 ? 'pos' : n < -0.05 ? 'neg' : 'flat';
-  return `<span class="${cls}">${n >= 0 ? '+' : ''}${n.toFixed(1)}%</span>`;
-}
-const ageText = (d) => (d === null || d === undefined ? '—' : d >= 730 ? `${(d / 365).toFixed(1)}y` : `${d}d`);
-
-function renderStats() {
-  const el = document.getElementById('stats');
-  const cells = [
-    [R.protocols_size, 'protocols scanned'],
-    [R.pre_token_size, 'record no token'],
-    [R.set_aside_size, 'derivatives set aside'],
-    [R.board_size, 'ranked on the board'],
-    [R.watchlist_size, 'watchlist covered'],
-    [R.global_multiple.toFixed(3), 'global live multiple'],
-  ];
-  el.innerHTML = cells.map(([v, l]) => `<div class="stat"><b>${v}</b><i>${l}</i></div>`).join('');
-  document.getElementById('model-line').textContent =
-    `Model ${R.model_version}: implied = TVL x category multiple (calibrated live from this snapshot's trading tokens, global median ${R.global_multiple}) x growth x maturity x breadth x sector momentum x size premium. Confidence 0-100 scores how much evidence backs each value; risk flags name what could go wrong. Snapshot as of ${R.as_of}, ${R.source}.`;
-}
-
-function riskLabel(f) {
-  return f.split(':')[0];
-}
-
-function categories() {
-  return [...new Set(R.rows.map((r) => r.category).filter(Boolean))].sort();
-}
-function chains() {
-  const set = new Set();
-  for (const r of R.rows) for (const c of r.chains) set.add(c);
-  return [...set].sort();
-}
-
-function filteredRows() {
-  let rows = R.rows.filter((r) => {
-    if (state.watchlist && !r.watchlist) return false;
-    if (state.category && r.category !== state.category) return false;
-    if (state.chain && !r.chains.includes(state.chain)) return false;
-    if (state.minTvl && r.tvl_usd < state.minTvl) return false;
-    if (state.risk === 'clean' && r.risk_flags.length > 0) return false;
-    if (state.risk === 'flagged' && r.risk_flags.length === 0) return false;
-    if (state.risk && state.risk !== 'clean' && state.risk !== 'flagged' && !r.risk_flags.some((f) => riskLabel(f) === state.risk)) return false;
-    if (state.q) {
-      const q = state.q.toLowerCase();
-      if (!`${r.name} ${r.slug} ${r.category || ''}`.toLowerCase().includes(q)) return false;
-    }
-    return true;
-  });
-  const key = {
-    rank: (r) => r.rank,
-    implied: (r) => -r.implied_value_usd,
-    tvl: (r) => -r.tvl_usd,
-    change: (r) => -(r.change_7d ?? -9999),
-    age: (r) => -(r.age_days ?? -1),
-    multiple: (r) => -r.category_multiple,
-    confidence: (r) => -r.confidence,
-  }[state.sort] || ((r) => r.rank);
-  rows = [...rows].sort((a, b) => key(a) - key(b));
-  return rows;
-}
-
-function downloadCsv(rows) {
-  const head = ['rank', 'slug', 'name', 'category', 'chains', 'tvl_usd', 'change_7d', 'age_days', 'implied_value_usd', 'category_multiple', 'confidence', 'risk_flags'];
-  const q = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
-  const lines = [head.join(',')].concat(rows.map((r) => [
-    r.rank, r.slug, q(r.name), q(r.category || ''), q(r.chains.join(';')), r.tvl_usd,
-    r.change_7d ?? '', r.age_days ?? '', r.implied_value_usd, r.category_multiple,
-    r.confidence, q(r.risk_flags.map(riskLabel).join(';')),
-  ].join(',')));
-  const blob = new Blob([lines.join('\n')], { type: 'text/csv' });
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = 'signal-sweep-board.csv';
-  a.click();
-  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
-}
-
-function controlsHtml(count) {
-  const catOpts = ['<option value="">All categories</option>', ...categories().map((c) => `<option ${c === state.category ? 'selected' : ''}>${esc(c)}</option>`)].join('');
-  const chainOpts = ['<option value="">All chains</option>', ...chains().map((c) => `<option ${c === state.chain ? 'selected' : ''}>${esc(c)}</option>`)].join('');
-  const tvlOpts = [[0, 'Any TVL'], [5e6, 'TVL $5M+'], [5e7, 'TVL $50M+'], [2.5e8, 'TVL $250M+'], [1e9, 'TVL $1B+']]
-    .map(([v, l]) => `<option value="${v}" ${Number(state.minTvl) === v ? 'selected' : ''}>${l}</option>`).join('');
-  const riskOpts = [['', 'Any risk'], ['clean', 'No risk flags'], ['flagged', 'Has risk flags'], ['single-chain', 'Single-chain'], ['TVL falling', 'TVL falling'], ['young protocol', 'Young protocol'], ['thin peer cohort', 'Thin peer cohort'], ['below the $50M watchlist floor', 'Below $50M floor']]
-    .map(([v, l]) => `<option value="${esc(v)}" ${state.risk === v ? 'selected' : ''}>${l}</option>`).join('');
-  return `<div class="controls">
-    <input type="search" id="f-q" placeholder="Search name or category" value="${esc(state.q)}">
-    <select id="f-cat">${catOpts}</select>
-    <select id="f-chain">${chainOpts}</select>
-    <select id="f-tvl">${tvlOpts}</select>
-    <select id="f-risk">${riskOpts}</select>
-    <label class="check"><input type="checkbox" id="f-watch" ${state.watchlist ? 'checked' : ''}> Watchlist only</label>
-    <button class="export" id="f-csv" type="button">Export CSV</button>
-    <span class="count">${count} shown</span>
-  </div>`;
-}
-
-function funnelHtml() {
-  const items = R.set_aside_reasons.map((x) => `<li>${esc(x.reason)} — ${x.count}</li>`).join('');
-  return `<details class="funnel"><summary>Coverage: ${R.protocols_size} protocols scanned &rarr; ${R.pre_token_size} record no token &rarr; ${R.set_aside_size} set aside as derivatives &rarr; ${R.board_size} ranked</summary>
-    <p>Every protocol in the snapshot is scanned; the board ranks every launch candidate, not a top-N slice. Set aside, by reason:</p>
-    <ul>${items}</ul>
-    <p>The Live view carries the ${R.live.length} largest tokens that already trade — their market caps calibrate the board's multiples.</p>
-  </details>`;
-}
-
-function tabsHtml() {
-  return `<div class="tabs">
-    <button data-tab="board" class="${state.tab === 'board' ? 'on' : ''}">Pre-token board</button>
-    <button data-tab="live" class="${state.tab === 'live' ? 'on' : ''}">Live tokens (market's own values)</button>
-  </div>`;
-}
-
-function boardHtml() {
-  const rows = filteredRows();
-  const head = `<tr>
-    <th data-sort="rank">#</th><th>Protocol</th><th class="hide">Category</th><th class="hide">Chains</th>
-    <th class="num" data-sort="tvl">TVL</th><th class="num" data-sort="change">7d</th>
-    <th class="num hide" data-sort="age">Age</th><th class="num" data-sort="multiple">Mult</th>
-    <th class="num" data-sort="confidence">Conf.</th>
-    <th class="num" data-sort="implied">Implied value</th></tr>`;
-  const body = rows.map((r) => `<tr data-slug="${esc(r.slug)}">
-    <td class="rank">${r.rank}</td>
-    <td><span class="pname">${esc(r.name)}</span>${r.watchlist ? '<span class="badge">WATCHLIST</span>' : ''}${r.risk_flags.length ? `<span class="risk" title="${esc(r.risk_flags.join(' | '))}">${r.risk_flags.length} risk${r.risk_flags.length === 1 ? '' : 's'}</span>` : ''}</td>
-    <td class="cat hide">${esc(r.category || '—')}</td>
-    <td class="chains hide">${esc(r.chains.slice(0, 3).join(', '))}${r.chains.length > 3 ? ` +${r.chains.length - 3}` : ''}</td>
-    <td class="num">${money(r.tvl_usd)}</td>
-    <td class="num">${pct(r.change_7d)}</td>
-    <td class="num hide">${ageText(r.age_days)}</td>
-    <td class="num mult">${r.category_multiple.toFixed(3)}</td>
-    <td class="num conf">${r.confidence}<span class="confbar"><i style="width:${r.confidence}%"></i></span></td>
-    <td class="num implied">${money(r.implied_value_usd)}</td></tr>`).join('');
-  const table = rows.length ? `<table><thead>${head}</thead><tbody>${body}</tbody></table>` : '<div class="empty">No protocol matches this filter. Loosen it: the board itself holds every candidate.</div>';
-  return `${tabsHtml()}${funnelHtml()}${controlsHtml(rows.length)}${table}`;
-}
-
-function liveHtml() {
-  const head = `<tr><th>Protocol</th><th class="hide">Category</th><th class="num">TVL</th><th class="num">Market cap</th><th class="num">7d</th><th class="num">Mcap / TVL</th></tr>`;
-  const body = R.live.map((r) => `<tr>
-    <td><span class="pname">${esc(r.name)}</span></td>
-    <td class="cat hide">${esc(r.category || '—')}</td>
-    <td class="num">${money(r.tvl_usd)}</td>
-    <td class="num">${money(r.mcap_usd)}</td>
-    <td class="num">${pct(r.change_7d)}</td>
-    <td class="num mult">${r.mcap_tvl === null ? '—' : r.mcap_tvl.toFixed(3)}</td></tr>`).join('');
-  return `${tabsHtml()}<div class="controls"><span class="count">These tokens already trade, so the board shows the market's own cap, never a model value. Their mcap/TVL ratios are what calibrate the board's multiples.</span></div><table><thead>${head}</thead><tbody>${body}</tbody></table>`;
-}
-
-function detailHtml(r) {
-  const kv = [
-    [money(r.implied_value_usd), 'implied value'],
-    [`#${r.rank} of ${R.board_size}`, 'board rank'],
-    [money(r.tvl_usd), 'TVL'],
-    [r.change_7d === null ? '—' : `${r.change_7d >= 0 ? '+' : ''}${r.change_7d}%`, 'TVL change, 7d'],
-    [ageText(r.age_days), 'tracked, no token'],
-    [r.watchlist ? 'Yes' : 'Below the floor', 'on the house watchlist'],
-    [`${r.confidence} / 100`, 'confidence in this value'],
-  ].map(([v, l]) => `<div><b>${v}</b><i>${l}</i></div>`).join('');
-  const factors = [
-    ['TVL (snapshot)', money(r.tvl_usd)],
-    [`Category multiple (${esc(r.category || 'global cohort')})`, `${r.category_multiple.toFixed(4)} — from ${r.cohort_size > 0 ? `${r.cohort_size} live peer${r.cohort_size === 1 ? '' : 's'}` : 'the global cohort'}`],
-    ['Growth multiplier (7d TVL)', r.growth_multiplier.toFixed(4)],
-    ['Maturity multiplier (age)', r.maturity_multiplier.toFixed(4)],
-    ['Breadth multiplier (chains)', r.breadth_multiplier.toFixed(4)],
-    [`Sector momentum (${r.sector_change_pct >= 0 ? '+' : ''}${r.sector_change_pct.toFixed(1)}% median 7d, live peers)`, r.sector_multiplier.toFixed(4)],
-    ['Size premium (log TVL)', r.size_multiplier.toFixed(4)],
-    ['Implied value', money(r.implied_value_usd)],
-  ].map(([k, v]) => `<tr><td>${k}</td><td class="num">${v}</td></tr>`).join('');
-  const risks = r.risk_flags.length
-    ? `<h2>Risks to watch</h2><ul class="risks">${r.risk_flags.map((f) => `<li>${esc(f)}</li>`).join('')}</ul>`
-    : '<h2>Risks to watch</h2><p class="note">No risk flag in the snapshot: TVL, age, chains and peer cohort are all reported and steady.</p>';
-  const plan = r.farm_steps.map((s) => `<li>${esc(s)}</li>`).join('');
-  return `<div class="detail">
-    <button class="back" id="d-back">&larr; Back to the board</button>
-    <h1>${esc(r.name)}${r.watchlist ? '<span class="badge">WATCHLIST</span>' : ''}</h1>
-    <p class="note">${esc(r.category || 'Uncategorised')} · ${esc(r.chains.join(', ') || 'no chains recorded')} · records no token in the snapshot${r.listed_at ? ` · tracked since ${esc(r.listed_at)}` : ''}</p>
-    <div class="kv">${kv}</div>
-    <p class="note">Why it ranks here: ${esc(r.note)}</p>
-    <h2>How the implied value is built</h2>
-    <table class="mini"><tbody>${factors}</tbody></table>
-    ${risks}
-    <h2>Farm plan</h2>
-    <ol class="plan">${plan}</ol>
-  </div>`;
-}
-
-function render() {
-  renderStats();
-  if (state.protocol) {
-    const r = R.rows.find((x) => x.slug === state.protocol);
-    app.innerHTML = r ? detailHtml(r) : boardHtml();
-  } else {
-    app.innerHTML = state.tab === 'live' ? liveHtml() : boardHtml();
+  function $(id) { return document.getElementById(id); }
+  function money(n) {
+    if (n >= 1e9) return "$" + (n / 1e9).toFixed(2) + "B";
+    if (n >= 1e6) return "$" + (n / 1e6).toFixed(1) + "M";
+    if (n >= 1e3) return "$" + (n / 1e3).toFixed(1) + "K";
+    return "$" + n;
   }
-  app.setAttribute('aria-busy', 'false');
-  bind();
-}
+  function pct(v) {
+    if (v === null || v === undefined) return "—";
+    var cls = v >= 0 ? "up" : "down";
+    return '<span class="' + cls + '">' + (v >= 0 ? "+" : "") + v.toFixed(1) + "%</span>";
+  }
+  function esc(s) {
+    return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
 
-function bind() {
-  for (const b of app.querySelectorAll('[data-tab]')) b.addEventListener('click', () => { state.tab = b.dataset.tab; state.protocol = ''; render(); });
-  for (const th of app.querySelectorAll('th[data-sort]')) th.addEventListener('click', () => { state.sort = th.dataset.sort; render(); });
-  for (const tr of app.querySelectorAll('tbody tr[data-slug]')) tr.addEventListener('click', () => { state.protocol = tr.dataset.slug; render(); window.scrollTo(0, 0); });
-  const back = document.getElementById('d-back');
-  if (back) back.addEventListener('click', () => { state.protocol = ''; render(); });
-  const q = document.getElementById('f-q');
-  if (q) q.addEventListener('input', () => { state.q = q.value; const pos = q.selectionStart; render(); const nq = document.getElementById('f-q'); nq.focus(); nq.setSelectionRange(pos, pos); });
-  const cat = document.getElementById('f-cat');
-  if (cat) cat.addEventListener('change', () => { state.category = cat.value; render(); });
-  const ch = document.getElementById('f-chain');
-  if (ch) ch.addEventListener('change', () => { state.chain = ch.value; render(); });
-  const tv = document.getElementById('f-tvl');
-  if (tv) tv.addEventListener('change', () => { state.minTvl = Number(tv.value); render(); });
-  const w = document.getElementById('f-watch');
-  if (w) w.addEventListener('change', () => { state.watchlist = w.checked; render(); });
-  const rk = document.getElementById('f-risk');
-  if (rk) rk.addEventListener('change', () => { state.risk = rk.value; render(); });
-  const csv = document.getElementById('f-csv');
-  if (csv) csv.addEventListener('click', () => downloadCsv(filteredRows()));
-}
+  function filtered() {
+    var q = state.q.toLowerCase();
+    return rows.filter(function (r) {
+      if (state.watchlist && !r.watchlist) return false;
+      if (state.chain && r.chains.indexOf(state.chain) < 0) return false;
+      if (state.category && r.category !== state.category) return false;
+      if (q && (r.name.toLowerCase().indexOf(q) < 0 && r.slug.indexOf(q) < 0)) return false;
+      return true;
+    });
+  }
 
-render();
+  function sorted(list) {
+    var key = state.sort;
+    return list.slice().sort(function (a, b) {
+      var av = a[key];
+      var bv = b[key];
+      if (av === null || av === undefined) return 1;
+      if (bv === null || bv === undefined) return -1;
+      if (typeof av === "string") return state.dir * av.localeCompare(bv);
+      return state.dir * (av - bv);
+    });
+  }
+
+  function renderBoard() {
+    var list = sorted(filtered());
+    var body = $("rows");
+    body.innerHTML = list.map(function (r) {
+      var star = r.watchlist ? ' <span class="star" title="On the watchlist">★</span>' : "";
+      var chains = r.chains.slice(0, 3).map(function (c) { return '<span class="pill">' + esc(c) + "</span>"; }).join("");
+      return "<tr data-slug=\"" + esc(r.slug) + "\">" +
+        '<td class="num">' + r.rank + "</td>" +
+        "<td><b>" + esc(r.name) + "</b>" + star + '<br><span style="color:var(--muted);font-size:12px">' + esc(r.slug) + "</span></td>" +
+        '<td class="num">' + money(r.tvl_usd) + "</td>" +
+        '<td class="num">' + pct(r.change_7d) + "</td>" +
+        '<td class="num">' + r.age_days + "d</td>" +
+        '<td class="num"><b>' + money(r.implied_value_usd) + "</b></td>" +
+        '<td class="num">' + r.multiple.toFixed(2) + "×</td>" +
+        "<td>" + chains + "</td></tr>";
+    }).join("");
+    $("count").textContent = list.length + " of " + rows.length + " protocols";
+    body.querySelectorAll("tr").forEach(function (tr) {
+      tr.addEventListener("click", function () { location.hash = "#/protocol/" + tr.getAttribute("data-slug"); });
+    });
+  }
+
+  function barRow(label, value, max) {
+    var w = Math.max(2, Math.round((value / max) * 100));
+    return '<div class="bar-row"><span>' + esc(label) + '</span><div class="bar"><i style="width:' + w + '%"></i></div><span>' + value.toFixed(3) + "</span></div>";
+  }
+
+  function renderDetail(slug) {
+    var r = null;
+    for (var i = 0; i < rows.length; i++) if (rows[i].slug === slug) r = rows[i];
+    var panel = $("detail");
+    if (!r) { panel.hidden = true; return; }
+    $("board").style.display = "none";
+    $("count").style.display = "none";
+    $("d-name").textContent = (r.watchlist ? "★ " : "") + r.name + "  ·  rank #" + r.rank;
+    $("d-facts").textContent =
+      "TVL " + money(r.tvl_usd) + "  ·  7d " + (r.change_7d === null ? "n/a" : r.change_7d.toFixed(1) + "%") +
+      "  ·  listed " + r.age_days + " days ago with no token recorded" +
+      "  ·  " + (r.category || "no category") + "  ·  chains: " + r.chains.join(", ");
+    var b = r.breakdown;
+    $("d-why").innerHTML =
+      "<p>Implied value <b>" + money(r.implied_value_usd) + "</b> = TVL " + money(r.tvl_usd) + " × multiple " + r.multiple.toFixed(3) + ".</p>" +
+      barRow("Base", b.base, 0.65) +
+      barRow("Growth boost", b.growthBoost, 0.65) +
+      barRow("Age boost", b.ageBoost, 0.65) +
+      barRow("Breadth boost", b.breadthBoost, 0.65);
+    $("d-steps").innerHTML = r.farm_steps.map(function (s) { return "<li>" + esc(s) + "</li>"; }).join("");
+    panel.hidden = false;
+  }
+
+  function route() {
+    var hash = location.hash || "#/";
+    var m = hash.match(/^#\/protocol\/([\w.-]+)/);
+    if (m) { renderBoard(); renderDetail(m[1]); return; }
+    $("detail").hidden = true;
+    $("board").style.display = "";
+    $("count").style.display = "";
+    var qm = hash.match(/chain=([^&]+)/);
+    var wm = hash.match(/watchlist=1/);
+    if (qm) { state.chain = decodeURIComponent(qm[1]); $("chain").value = state.chain; }
+    if (wm) { state.watchlist = true; $("watchlist").checked = true; }
+    renderBoard();
+  }
+
+  function fillSelects() {
+    var chains = {};
+    var cats = {};
+    rows.forEach(function (r) {
+      r.chains.forEach(function (c) { chains[c] = true; });
+      if (r.category) cats[r.category] = true;
+    });
+    Object.keys(chains).sort().forEach(function (c) {
+      var o = document.createElement("option"); o.value = c; o.textContent = c; $("chain").appendChild(o);
+    });
+    Object.keys(cats).sort().forEach(function (c) {
+      var o = document.createElement("option"); o.value = c; o.textContent = c; $("category").appendChild(o);
+    });
+  }
+
+  function exportCSV() {
+    var head = "rank,slug,name,category,chains,tvl_usd,change_7d,age_days,implied_value_usd,multiple,watchlist\n";
+    var body = sorted(filtered()).map(function (r) {
+      return [r.rank, r.slug, '"' + r.name.replace(/"/g, '""') + '"', r.category || "", '"' + r.chains.join(";") + '"',
+        r.tvl_usd, r.change_7d === null ? "" : r.change_7d, r.age_days, r.implied_value_usd, r.multiple, r.watchlist ? 1 : 0].join(",");
+    }).join("\n");
+    var blob = new Blob([head + body + "\n"], { type: "text/csv" });
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "token-radar-board.csv";
+    a.click();
+    setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
+  }
+
+  function init() {
+    fillSelects();
+    $("meta").innerHTML = "<b>" + rows.length + "</b> ranked · snapshot " + esc(DATA.as_of || "") +
+      "<br>watchlist " + (DATA.counts ? DATA.counts.watchlist_covered : "?") + "/" + (DATA.counts ? DATA.counts.watchlist : "?") +
+      " covered · floor " + money(DATA.floor_usd || 0);
+    var trading = DATA.trading_reference || [];
+    $("trading-note").textContent = trading.length
+      ? "Already trading, shown for reference only and not ranked here: " +
+        trading.map(function (t) { return t.name + " (" + money(t.mcap_usd) + ")"; }).join(", ") + "."
+      : "";
+    $("q").addEventListener("input", function (e) { state.q = e.target.value; renderBoard(); });
+    $("chain").addEventListener("change", function (e) { state.chain = e.target.value; renderBoard(); });
+    $("category").addEventListener("change", function (e) { state.category = e.target.value; renderBoard(); });
+    $("watchlist").addEventListener("change", function (e) { state.watchlist = e.target.checked; renderBoard(); });
+    $("csv").addEventListener("click", exportCSV);
+    $("close").addEventListener("click", function () { location.hash = "#/"; });
+    document.querySelectorAll("th[data-sort]").forEach(function (th) {
+      th.addEventListener("click", function () {
+        var key = th.getAttribute("data-sort");
+        if (state.sort === key) state.dir = -state.dir;
+        else { state.sort = key; state.dir = key === "name" ? 1 : -1; }
+        renderBoard();
+      });
+    });
+    window.addEventListener("hashchange", route);
+    route();
+  }
+  init();
+})();
