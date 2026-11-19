@@ -36,6 +36,18 @@ tbody tr:hover{background:#14203a}
 .badge{display:inline-block;background:#123527;color:var(--mint);border:1px solid #1f5c40;border-radius:999px;font-size:10px;padding:0 7px;margin-left:7px;vertical-align:2px;letter-spacing:.05em}
 .cat{color:var(--dim)}
 .chains{color:var(--faint);font-size:12px}
+.risk{display:inline-block;background:#3a1d1d;color:var(--red);border:1px solid #5c2b2b;border-radius:999px;font-size:10px;padding:0 7px;margin-left:7px;vertical-align:2px;letter-spacing:.05em}
+.conf{white-space:nowrap}
+.confbar{display:inline-block;width:44px;height:6px;background:var(--line);border-radius:3px;margin-left:6px;vertical-align:middle;overflow:hidden}
+.confbar i{display:block;height:100%;background:var(--sky);border-radius:3px}
+.export{background:var(--chip);color:var(--sky);border:1px solid var(--line);border-radius:7px;padding:7px 12px;font:inherit;font-size:13px;cursor:pointer}
+.export:hover{border-color:var(--sky)}
+.funnel{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:9px 12px;margin-bottom:12px;color:var(--dim);font-size:13px}
+.funnel summary{cursor:pointer;color:var(--ink);font-weight:600}
+.funnel ul{margin:6px 0 2px;padding-left:20px}
+.funnel p{margin:6px 0 0}
+ul.risks{margin:6px 0 0;padding-left:20px}
+ul.risks li{margin:0 0 6px;color:var(--amber)}
 .pos{color:var(--mint)} .neg{color:var(--red)} .flat{color:var(--faint)}
 .implied{color:var(--amber);font-weight:800}
 .mult{color:var(--sky)}

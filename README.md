@@ -9,7 +9,7 @@ launch radar"). It reads the sealed DefiLlama snapshot, finds the protocols
 that record no token yet, and ranks them by an implied value with a concrete
 farm plan for each.
 
-## The model (sweep-2)
+## The model (sweep-3)
 
 No hardcoded names and no hardcoded multiple. On every run the model
 calibrates itself from the snapshot's own live-token cohort:
@@ -19,12 +19,20 @@ calibrates itself from the snapshot's own live-token cohort:
   median (0.169 on this snapshot, from 144 live peers), and clamp to [0.05, 0.80].
 - Implied value = TVL × category multiple × growth multiplier (7-day TVL
   change, clamped) × maturity multiplier (days tracked with no token) ×
-  breadth multiplier (chains it runs on).
+  breadth multiplier (chains it runs on) × sector momentum (the category's
+  median 7-day change among its live peers, weight 0.15) × size premium
+  (log TVL, 0.97 at $1M to 1.03 at $1B).
+- Each row also carries a confidence score (0–100) from the peer cohort's
+  size, whether growth and age are reported, chain count, TVL above the
+  $50M floor, sector coverage and age — plus risk flags (single-chain,
+  falling TVL, young, unreported figures, thin cohort, below the floor),
+  which the farm plan answers with a risk-sized first position.
 - Candidates are pre-token protocols that are not derivatives of a token
   that already trades: wrapped, staked and bridged products, liquid
   (re)staking wrappers, centralised exchanges and versioned pools are set
-  aside and counted on the dashboard. Every watchlist protocol is ranked,
-  plus every other candidate in the snapshot — 197 rows on this snapshot.
+  aside and counted on the dashboard, with the reason for each. Every
+  watchlist protocol is ranked, plus every other candidate in the snapshot
+  — 197 rows on this snapshot.
 
 ## Layout
 
@@ -33,9 +41,11 @@ calibrates itself from the snapshot's own live-token cohort:
   copies `dashboard/` and `screenshots/`, writes `/output/dossier.json`.
 - `lib/model.ts` — the radar itself: snapshot parsing, multiple calibration,
   candidate filtering, implied values, farm plans, gate self-checks.
-- `dashboard/` — the static page: a sortable, filterable board, a detail
-  view per protocol with its model breakdown and farm plan, and a Live view
-  of tokens that already trade. Renders fully offline.
+- `dashboard/` — the static page: a sortable, filterable board (search,
+  category, chain, TVL, risk flag, watchlist-only, CSV export), a detail
+  view per protocol with its model breakdown, confidence score, risk flags
+  and farm plan, a coverage funnel showing the full scan, and a Live view
+  of the 48 largest tokens that already trade. Renders fully offline.
 - `screenshots/` — three captures of the dashboard: the board, one
   protocol's detail view, and a filtered view.
 - `vendor/makefun-board.ts` — make.fun's dossier library, vendored unchanged.

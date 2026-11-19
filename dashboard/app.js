@@ -13,6 +13,7 @@ const state = {
   category: params.get('category') || '',
   chain: params.get('chain') || '',
   watchlist: params.get('watchlist') === '1',
+  risk: params.get('risk') || '',
   minTvl: Number(params.get('mintvl') || 0),
   sort: params.get('sort') || 'rank',
   protocol: params.get('protocol') || '',
@@ -45,7 +46,11 @@ function renderStats() {
   ];
   el.innerHTML = cells.map(([v, l]) => `<div class="stat"><b>${v}</b><i>${l}</i></div>`).join('');
   document.getElementById('model-line').textContent =
-    `Model ${R.model_version}: implied = TVL x category multiple (calibrated live from this snapshot's trading tokens, global median ${R.global_multiple}) x growth x maturity x breadth. Snapshot as of ${R.as_of}, ${R.source}.`;
+    `Model ${R.model_version}: implied = TVL x category multiple (calibrated live from this snapshot's trading tokens, global median ${R.global_multiple}) x growth x maturity x breadth x sector momentum x size premium. Confidence 0-100 scores how much evidence backs each value; risk flags name what could go wrong. Snapshot as of ${R.as_of}, ${R.source}.`;
+}
+
+function riskLabel(f) {
+  return f.split(':')[0];
 }
 
 function categories() {
@@ -63,6 +68,9 @@ function filteredRows() {
     if (state.category && r.category !== state.category) return false;
     if (state.chain && !r.chains.includes(state.chain)) return false;
     if (state.minTvl && r.tvl_usd < state.minTvl) return false;
+    if (state.risk === 'clean' && r.risk_flags.length > 0) return false;
+    if (state.risk === 'flagged' && r.risk_flags.length === 0) return false;
+    if (state.risk && state.risk !== 'clean' && state.risk !== 'flagged' && !r.risk_flags.some((f) => riskLabel(f) === state.risk)) return false;
     if (state.q) {
       const q = state.q.toLowerCase();
       if (!`${r.name} ${r.slug} ${r.category || ''}`.toLowerCase().includes(q)) return false;
@@ -76,9 +84,26 @@ function filteredRows() {
     change: (r) => -(r.change_7d ?? -9999),
     age: (r) => -(r.age_days ?? -1),
     multiple: (r) => -r.category_multiple,
+    confidence: (r) => -r.confidence,
   }[state.sort] || ((r) => r.rank);
   rows = [...rows].sort((a, b) => key(a) - key(b));
   return rows;
+}
+
+function downloadCsv(rows) {
+  const head = ['rank', 'slug', 'name', 'category', 'chains', 'tvl_usd', 'change_7d', 'age_days', 'implied_value_usd', 'category_multiple', 'confidence', 'risk_flags'];
+  const q = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+  const lines = [head.join(',')].concat(rows.map((r) => [
+    r.rank, r.slug, q(r.name), q(r.category || ''), q(r.chains.join(';')), r.tvl_usd,
+    r.change_7d ?? '', r.age_days ?? '', r.implied_value_usd, r.category_multiple,
+    r.confidence, q(r.risk_flags.map(riskLabel).join(';')),
+  ].join(',')));
+  const blob = new Blob([lines.join('\n')], { type: 'text/csv' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'signal-sweep-board.csv';
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 }
 
 function controlsHtml(count) {
@@ -86,14 +111,27 @@ function controlsHtml(count) {
   const chainOpts = ['<option value="">All chains</option>', ...chains().map((c) => `<option ${c === state.chain ? 'selected' : ''}>${esc(c)}</option>`)].join('');
   const tvlOpts = [[0, 'Any TVL'], [5e6, 'TVL $5M+'], [5e7, 'TVL $50M+'], [2.5e8, 'TVL $250M+'], [1e9, 'TVL $1B+']]
     .map(([v, l]) => `<option value="${v}" ${Number(state.minTvl) === v ? 'selected' : ''}>${l}</option>`).join('');
+  const riskOpts = [['', 'Any risk'], ['clean', 'No risk flags'], ['flagged', 'Has risk flags'], ['single-chain', 'Single-chain'], ['TVL falling', 'TVL falling'], ['young protocol', 'Young protocol'], ['thin peer cohort', 'Thin peer cohort'], ['below the $50M watchlist floor', 'Below $50M floor']]
+    .map(([v, l]) => `<option value="${esc(v)}" ${state.risk === v ? 'selected' : ''}>${l}</option>`).join('');
   return `<div class="controls">
     <input type="search" id="f-q" placeholder="Search name or category" value="${esc(state.q)}">
     <select id="f-cat">${catOpts}</select>
     <select id="f-chain">${chainOpts}</select>
     <select id="f-tvl">${tvlOpts}</select>
+    <select id="f-risk">${riskOpts}</select>
     <label class="check"><input type="checkbox" id="f-watch" ${state.watchlist ? 'checked' : ''}> Watchlist only</label>
+    <button class="export" id="f-csv" type="button">Export CSV</button>
     <span class="count">${count} shown</span>
   </div>`;
+}
+
+function funnelHtml() {
+  const items = R.set_aside_reasons.map((x) => `<li>${esc(x.reason)} — ${x.count}</li>`).join('');
+  return `<details class="funnel"><summary>Coverage: ${R.protocols_size} protocols scanned &rarr; ${R.pre_token_size} record no token &rarr; ${R.set_aside_size} set aside as derivatives &rarr; ${R.board_size} ranked</summary>
+    <p>Every protocol in the snapshot is scanned; the board ranks every launch candidate, not a top-N slice. Set aside, by reason:</p>
+    <ul>${items}</ul>
+    <p>The Live view carries the ${R.live.length} largest tokens that already trade — their market caps calibrate the board's multiples.</p>
+  </details>`;
 }
 
 function tabsHtml() {
@@ -109,19 +147,21 @@ function boardHtml() {
     <th data-sort="rank">#</th><th>Protocol</th><th class="hide">Category</th><th class="hide">Chains</th>
     <th class="num" data-sort="tvl">TVL</th><th class="num" data-sort="change">7d</th>
     <th class="num hide" data-sort="age">Age</th><th class="num" data-sort="multiple">Mult</th>
+    <th class="num" data-sort="confidence">Conf.</th>
     <th class="num" data-sort="implied">Implied value</th></tr>`;
   const body = rows.map((r) => `<tr data-slug="${esc(r.slug)}">
     <td class="rank">${r.rank}</td>
-    <td><span class="pname">${esc(r.name)}</span>${r.watchlist ? '<span class="badge">WATCHLIST</span>' : ''}</td>
+    <td><span class="pname">${esc(r.name)}</span>${r.watchlist ? '<span class="badge">WATCHLIST</span>' : ''}${r.risk_flags.length ? `<span class="risk" title="${esc(r.risk_flags.join(' | '))}">${r.risk_flags.length} risk${r.risk_flags.length === 1 ? '' : 's'}</span>` : ''}</td>
     <td class="cat hide">${esc(r.category || '—')}</td>
     <td class="chains hide">${esc(r.chains.slice(0, 3).join(', '))}${r.chains.length > 3 ? ` +${r.chains.length - 3}` : ''}</td>
     <td class="num">${money(r.tvl_usd)}</td>
     <td class="num">${pct(r.change_7d)}</td>
     <td class="num hide">${ageText(r.age_days)}</td>
     <td class="num mult">${r.category_multiple.toFixed(3)}</td>
+    <td class="num conf">${r.confidence}<span class="confbar"><i style="width:${r.confidence}%"></i></span></td>
     <td class="num implied">${money(r.implied_value_usd)}</td></tr>`).join('');
   const table = rows.length ? `<table><thead>${head}</thead><tbody>${body}</tbody></table>` : '<div class="empty">No protocol matches this filter. Loosen it: the board itself holds every candidate.</div>';
-  return `${tabsHtml()}${controlsHtml(rows.length)}${table}`;
+  return `${tabsHtml()}${funnelHtml()}${controlsHtml(rows.length)}${table}`;
 }
 
 function liveHtml() {
@@ -144,6 +184,7 @@ function detailHtml(r) {
     [r.change_7d === null ? '—' : `${r.change_7d >= 0 ? '+' : ''}${r.change_7d}%`, 'TVL change, 7d'],
     [ageText(r.age_days), 'tracked, no token'],
     [r.watchlist ? 'Yes' : 'Below the floor', 'on the house watchlist'],
+    [`${r.confidence} / 100`, 'confidence in this value'],
   ].map(([v, l]) => `<div><b>${v}</b><i>${l}</i></div>`).join('');
   const factors = [
     ['TVL (snapshot)', money(r.tvl_usd)],
@@ -151,8 +192,13 @@ function detailHtml(r) {
     ['Growth multiplier (7d TVL)', r.growth_multiplier.toFixed(4)],
     ['Maturity multiplier (age)', r.maturity_multiplier.toFixed(4)],
     ['Breadth multiplier (chains)', r.breadth_multiplier.toFixed(4)],
+    [`Sector momentum (${r.sector_change_pct >= 0 ? '+' : ''}${r.sector_change_pct.toFixed(1)}% median 7d, live peers)`, r.sector_multiplier.toFixed(4)],
+    ['Size premium (log TVL)', r.size_multiplier.toFixed(4)],
     ['Implied value', money(r.implied_value_usd)],
   ].map(([k, v]) => `<tr><td>${k}</td><td class="num">${v}</td></tr>`).join('');
+  const risks = r.risk_flags.length
+    ? `<h2>Risks to watch</h2><ul class="risks">${r.risk_flags.map((f) => `<li>${esc(f)}</li>`).join('')}</ul>`
+    : '<h2>Risks to watch</h2><p class="note">No risk flag in the snapshot: TVL, age, chains and peer cohort are all reported and steady.</p>';
   const plan = r.farm_steps.map((s) => `<li>${esc(s)}</li>`).join('');
   return `<div class="detail">
     <button class="back" id="d-back">&larr; Back to the board</button>
@@ -162,6 +208,7 @@ function detailHtml(r) {
     <p class="note">Why it ranks here: ${esc(r.note)}</p>
     <h2>How the implied value is built</h2>
     <table class="mini"><tbody>${factors}</tbody></table>
+    ${risks}
     <h2>Farm plan</h2>
     <ol class="plan">${plan}</ol>
   </div>`;
@@ -195,6 +242,10 @@ function bind() {
   if (tv) tv.addEventListener('change', () => { state.minTvl = Number(tv.value); render(); });
   const w = document.getElementById('f-watch');
   if (w) w.addEventListener('change', () => { state.watchlist = w.checked; render(); });
+  const rk = document.getElementById('f-risk');
+  if (rk) rk.addEventListener('change', () => { state.risk = rk.value; render(); });
+  const csv = document.getElementById('f-csv');
+  if (csv) csv.addEventListener('click', () => downloadCsv(filteredRows()));
 }
 
 render();
